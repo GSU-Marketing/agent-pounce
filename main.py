@@ -58,10 +58,12 @@ app.add_middleware(
 )
 
 # ---------- 0. health ----------
-@app.get("/", include_in_schema=False)
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 def health():
-    """Render’s health-check & quick sanity ping."""
-    return {"status": "ok", "time": datetime.utcnow().isoformat()}
+    """Render’s health-check. Accepts both GET and HEAD."""
+    return {"status": "ok", "utc": datetime.utcnow().isoformat()}
+
+
 
 # ---------- 1. /chat ----------
 class ChatQuery(BaseModel):
