@@ -1,10 +1,5 @@
 """
 GSU Chat-Botty backend  v1.2-debug
-• GET  /              → health-check
-• POST /chat          → OpenAI chat completion
-• GET  /crawl         → program cards
-• GET  /status        → flexible 3-ID Slate lookup
-• GET  /iframe        → mini chat widget
 """
 
 # ---------- stdlib ----------
@@ -16,7 +11,8 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from fastapi.staticfiles import StaticFiles          # NEW
+from pydantic import BaseModel
 from openai import OpenAI
 import httpx
 from bs4 import BeautifulSoup
@@ -27,21 +23,24 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("gsu-chat-botty")
 
 # ---------- env ----------
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")           # must be set in Render
-client = OpenAI()                                     # ← missing in your paste
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")         # must exist in Render
+client = OpenAI()                                    # reads key automatically
 
-SLATE_URL   = (
+SLATE_URL = (
     "https://gradapply.gsu.edu/manage/query/run"
     "?id=0b17bc0d-6d90-444b-b581-206c7176df0e"
     "&cmd=service&output=json"
 )
-SLATE_USER  = "chatbot"                               # Name you typed in “User Token”
-SLATE_TOKEN = "49704e7d-0520-4036-a611-a631bc6c750c"  # token value
+SLATE_USER  = "chatbot"
+SLATE_TOKEN = "49704e7d-0520-4036-a611-a631bc6c750c"
 
 # ---------- FastAPI ----------
 app = FastAPI(title="GSU Chat-Botty", version="1.2-debug")
-app.add_middleware(CORSMiddleware,
-                   allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])
+
+# serve /static/*
+app.mount("/static", StaticFiles(directory="static"), name="static")  # NEW
 
 # ---------- 0. health ----------
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
@@ -57,8 +56,14 @@ async def chat(q: ChatQuery):
     try:
         comp = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "system", "content": "You are a helpful bot."},
-                      {"role": "user",   "content": q.message}],
+            messages=[
+                {"role": "system", "content":
+                 "You are Agent Pounce, Georgia State’s graduate admissions assistant. "
+                 "Always greet new users with: 👋 Hi! I’m Agent Pounce, your grad-admissions guru. "
+                 "Ask me anything…"},
+                {"role": "user", "content": q.message}          # ← user question added
+            ],
+            temperature=0.7,
         )
         return comp.model_dump()
     except Exception as e:
@@ -93,23 +98,19 @@ async def crawl():
 
 # ---------- helper ----------
 def _safe_json(resp: httpx.Response) -> dict:
-    ctype = resp.headers.get("content-type", "")
-    if "application/json" not in ctype.lower():
-        raise HTTPException(
-            502,
-            f"Slate returned non-JSON ({resp.status_code}) – "
-            "check Web-Service auth settings."
-        )
+    if "application/json" not in resp.headers.get("content-type", "").lower():
+        raise HTTPException(502, "Slate returned non-JSON "
+                                f"({resp.status_code}) – check Web-Service auth.")
     return resp.json()
 
 # ---------- 3. /status ----------
 class StatusReq(BaseModel):
     email:      Optional[str] = None
-    birthdate:  Optional[str] = None  # YYYY-MM-DD
+    birthdate:  Optional[str] = None      # YYYY-MM-DD
     panther_id: Optional[str] = None
     phone:      Optional[str] = None
     last_name:  Optional[str] = None
-    program:    Optional[str] = None  # optional hint
+    program:    Optional[str] = None      # optional hint
 
 def _have_3(d: dict) -> bool:
     return sum(bool(d.get(k)) for k in
@@ -118,7 +119,7 @@ def _have_3(d: dict) -> bool:
 @app.get("/status")
 async def status(req: StatusReq = Depends()):
     params = req.dict(exclude_none=True)
-    params.update({"user": SLATE_USER, "token": SLATE_TOKEN})   # 👈 query-string creds
+    params.update({"user": SLATE_USER, "token": SLATE_TOKEN})     # query-string creds
 
     if not _have_3(params):
         raise HTTPException(422, "Need any three of: email, birthdate, panther_id, phone, last_name")
@@ -127,8 +128,7 @@ async def status(req: StatusReq = Depends()):
         try:
             r = await c.get(SLATE_URL, params=params); r.raise_for_status()
         except httpx.HTTPStatusError as e:
-            log.error("Slate replied %s → %s", e.response.status_code,
-                      e.response.text[:120])
+            log.error("Slate replied %s → %s", e.response.status_code, e.response.text[:120])
             raise HTTPException(e.response.status_code, "Slate error") from e
 
     rows = _safe_json(r).get("data", [])
@@ -158,12 +158,11 @@ body,html{margin:0;height:100%;font-family:system-ui}
 #form{height:42px;display:flex}
 #msg{flex:1;border:1px solid #aaa;border-right:0;padding:4px}
 button{width:80px}
-.user{font-weight:bold;color:#0055CC}
+.user{font-weight:bold;color:#0039a6}
 .bot{color:#333}
 </style></head><body>
 <div id="log"></div>
-<form id="form"><input id="msg" autocomplete="off" placeholder="Ask me anything…">
-<button>Send</button></form>
+<form id="form"><input id="msg" placeholder="Ask me anything…"><button>Send</button></form>
 <script>
 const log=document.getElementById('log'),form=document.getElementById('form'),msg=document.getElementById('msg');
 form.onsubmit=async e=>{
