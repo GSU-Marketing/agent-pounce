@@ -127,7 +127,7 @@ async def status(req: StatusReq):
             raise HTTPException(e.response.status_code, e.response.text) from e
 
 # ---------- 4. /iframe ----------
-CHAT_IFRAME = f"""<!doctype html>
+CHAT_IFRAME = """<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
