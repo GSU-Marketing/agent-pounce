@@ -1,19 +1,20 @@
 """
-GSU Chat-Botty – all-in-one FastAPI backend
-------------------------------------------
+GSU Chat-Botty — unified FastAPI backend
+---------------------------------------
 • GET  /              → {"status": "ok"}
 • POST /chat          → OpenAI chat completion
-• GET  /crawl         → Scrape graduate program cards from graduate.gsu.edu
+• GET  /crawl         → Scrape graduate program cards (graduate.gsu.edu)
 • GET  /status        → Applicant status via Slate Open API
 • GET  /iframe        → Self-contained HTML chat widget
 """
 
-# ---------- standard libs ----------
+# ---------- stdlib ----------
 import os, logging
 from datetime import datetime
+from typing import Optional
 
 # ---------- third-party ----------
-from fastapi import FastAPI, HTTPException, Depends            # ← Depends added here
+from fastapi import FastAPI, HTTPException, Depends        # ← Depends added
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -31,22 +32,24 @@ log = logging.getLogger("gsu-chat-botty")
 # ---------- environment ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
-    log.warning("OPENAI_API_KEY not set – /chat will fail.")
-client = OpenAI()  # auto-reads env var
+    log.warning("OPENAI_API_KEY not set — /chat will fail.")
+client = OpenAI()                                            # auto-reads env var
 
-SLATE_URL   = os.getenv("SLATE_URL",   "https://gradapply.gsu.edu/manage/service/api/gradtestbot")
-SLATE_TOKEN = os.getenv("SLATE_TOKEN", "1e5b8e64-548b-4341-843a-9a9bbbef92da")
+SLATE_URL   = os.getenv("SLATE_URL",
+    "https://gradapply.gsu.edu/manage/service/api/gradtestbot")
+SLATE_TOKEN = os.getenv("SLATE_TOKEN",
+    "1e5b8e64-548b-4341-843a-9a9bbbef92da")
 
 # ---------- FastAPI ----------
 app = FastAPI(
     title="GSU Chat-Botty Backend",
-    version="1.0.2",
-    description="GPT chatbot + live crawler + Slate status.",
+    version="1.1.0",
+    description="GPT chatbot + live crawler + flexible Slate status lookup",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],    # tighten in prod
+    allow_origins=["*"],          # tighten in production
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -62,12 +65,9 @@ class ChatQuery(BaseModel):
 
 @app.post("/chat")
 async def chat(query: ChatQuery):
-    if not OPENAI_API_KEY:
-        raise HTTPException(500, "OPENAI_API_KEY not configured")
-
     try:
         comp = client.chat.completions.create(
-            model="gpt-3.5-turbo",       # use gpt-4o-mini if your key allows
+            model="gpt-3.5-turbo",      # swap for gpt-4o-mini if key allows
             messages=[
                 {"role": "system", "content": "You are a helpful bot."},
                 {"role": "user",   "content": query.message},
@@ -92,7 +92,7 @@ async def fetch_program_cards(url: str = "https://graduate.gsu.edu/program-cards
         r.raise_for_status()
 
     soup = BeautifulSoup(r.text, "html.parser")
-    cards = soup.select("a.program-card, li.card")  # handles both old & new markup
+    cards = soup.select("a.program-card, li.card")   # legacy & new markup
 
     for card in cards:
         title  = card.select_one(".program-card__title, .card__title")
@@ -108,38 +108,52 @@ async def fetch_program_cards(url: str = "https://graduate.gsu.edu/program-cards
 async def crawl():
     return [c async for c in fetch_program_cards()]
 
-# ---------- 3. /status ----------
+# ---------- 3. /status (≥3 identifiers, program optional) ----------
 class StatusReq(BaseModel):
-    email: str         = Field(..., examples=["jaguar@gsu.edu"])
-    birthdate: str     = Field(..., examples=["1999-05-14"])  # YYYY-MM-DD
-    application_id: str = Field(..., examples=["A1234567"])
+    email:      Optional[str] = None
+    birthdate:  Optional[str] = None       # YYYY-MM-DD
+    panther_id: Optional[str] = None       # a.k.a. application_id
+    phone:      Optional[str] = None
+    last_name:  Optional[str] = None
+    program:    Optional[str] = None       # optional hint; doesn’t count toward 3
+
+def _enough_keys(d: dict, n: int = 3) -> bool:
+    keys = [k for k in ("email", "birthdate", "panther_id", "phone", "last_name") if d.get(k)]
+    return len(keys) >= n
 
 @app.get("/status")
 async def status(req: StatusReq = Depends()):
+    params = req.dict(exclude_none=True)
+    if not _enough_keys(params):
+        raise HTTPException(
+            422,
+            "Please supply at least three of: email, birthdate, panther_id, phone, last_name"
+        )
+
     headers = {"Authorization": f"Bearer {SLATE_TOKEN}"}
     async with httpx.AsyncClient(timeout=10) as c:
         try:
-            r = await c.get(SLATE_URL, params=req.dict(), headers=headers)
+            r = await c.get(SLATE_URL, params=params, headers=headers)
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
             raise HTTPException(e.response.status_code, e.response.text) from e
 
-    data = r.json().get("data", [])
-    if not data:
-        raise HTTPException(404, "Applicant not found")
+    rows = r.json().get("data", [])
+    if not rows:
+        raise HTTPException(404, "No application matched those details")
 
-    row = data[0]
+    row = rows[0]
     return {
-        "reference":   row.get("Application_Reference_Id"),
-        "first_name":  row.get("First_Name"),
-        "last_name":   row.get("Last_Name"),
-        "birthdate":   row.get("birthdate"),
-        "phone":       row.get("Phone"),
-        "email":       row.get("Email"),
-        "status":      row.get("Application_Status"),
-        "college":     row.get("Applied_College"),
-        "program":     row.get("Applied_Program"),
-        "term":        row.get("Applied_Term"),
+        "reference": row.get("Application_Reference_Id"),
+        "first_name": row.get("First_Name"),
+        "last_name":  row.get("Last_Name"),
+        "status":     row.get("Application_Status"),
+        "program":    row.get("Applied_Program"),
+        "term":       row.get("Applied_Term"),
+        "college":    row.get("Applied_College"),
+        "email":      row.get("Email"),
+        "phone":      row.get("Phone"),
+        "birthdate":  row.get("birthdate"),
     }
 
 # ---------- 4. /iframe ----------
