@@ -6,6 +6,11 @@ import os
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+@app.get("/", include_in_schema=False)
+def health():
+    return {"status": "ok"}      # <-- any JSON is fine
+
+
 app = FastAPI()
 
 # Allow frontend JS from any origin (in production, restrict to your domain)
