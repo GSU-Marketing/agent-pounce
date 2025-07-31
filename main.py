@@ -1,11 +1,10 @@
 """
-GSU Chat-Botty — unified FastAPI backend
----------------------------------------
-• GET  /              → {"status": "ok"}
+GSU Chat-Botty backend  v1.2-debug
+• GET  /              → health-check (GET & HEAD)
 • POST /chat          → OpenAI chat completion
-• GET  /crawl         → Scrape graduate program cards (graduate.gsu.edu)
-• GET  /status        → Applicant status via Slate Open API
-• GET  /iframe        → Self-contained HTML chat widget
+• GET  /crawl         → live program cards (follows Cloudflare redirect)
+• GET  /status        → flexible 3-ID Slate lookup (follows redirect)
+• GET  /iframe        → mini HTML chat widget
 """
 
 # ---------- stdlib ----------
@@ -14,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 # ---------- third-party ----------
-from fastapi import FastAPI, HTTPException, Depends        # ← Depends added
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -29,30 +28,15 @@ logging.basicConfig(
 )
 log = logging.getLogger("gsu-chat-botty")
 
-# ---------- environment ----------
+# ---------- env ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    log.warning("OPENAI_API_KEY not set — /chat will fail.")
-client = OpenAI()                                            # auto-reads env var
-
-SLATE_URL   = os.getenv("SLATE_URL",
-    "https://gradapply.gsu.edu/manage/service/api/gradtestbot")
-SLATE_TOKEN = os.getenv("SLATE_TOKEN",
-    "1e5b8e64-548b-4341-843a-9a9bbbef92da")
+client = OpenAI()                        # auto-reads env
+SLATE_URL   = os.getenv("SLATE_URL",   "https://gradapply.gsu.edu/manage/service/api/gradtestbot")
+SLATE_TOKEN = os.getenv("SLATE_TOKEN", "1e5b8e64-548b-4341-843a-9a9bbbef92da")
 
 # ---------- FastAPI ----------
-app = FastAPI(
-    title="GSU Chat-Botty Backend",
-    version="1.1.0",
-    description="GPT chatbot + live crawler + flexible Slate status lookup",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],          # tighten in production
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="GSU Chat-Botty", version="1.2-debug")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ---------- 0. health ----------
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
@@ -61,86 +45,80 @@ def health():
 
 # ---------- 1. /chat ----------
 class ChatQuery(BaseModel):
-    message: str = Field(..., examples=["Hello!"])
+    message: str
 
 @app.post("/chat")
-async def chat(query: ChatQuery):
+async def chat(q: ChatQuery):
     try:
-        comp = client.chat.completions.create(
-            model="gpt-3.5-turbo",      # swap for gpt-4o-mini if key allows
-            messages=[
-                {"role": "system", "content": "You are a helpful bot."},
-                {"role": "user",   "content": query.message},
-            ],
-            temperature=0.7,
+        c = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role":"system","content":"You are a helpful bot."},
+                      {"role":"user","content":q.message}],
         )
-        return comp.model_dump()
+        return c.model_dump()
     except Exception as e:
-        log.exception("OpenAI failure")
-        raise HTTPException(500, str(e)) from e
+        log.exception("OpenAI error")
+        raise HTTPException(500, str(e))
 
 # ---------- 2. /crawl ----------
-async def fetch_program_cards(url: str = "https://graduate.gsu.edu/program-cards/"):
+async def fetch_program_cards(url="https://graduate.gsu.edu/program-cards/"):
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
-        )
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/126 Safari/537.36")
     }
-    async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as c:
+    async with httpx.AsyncClient(
+        timeout=15, headers=headers, follow_redirects=True
+    ) as c:
         r = await c.get(url)
         r.raise_for_status()
 
-    soup = BeautifulSoup(r.text, "html.parser")
-    cards = soup.select("a.program-card, li.card")   # legacy & new markup
-
+    soup  = BeautifulSoup(r.text, "html.parser")
+    cards = soup.select("a.program-card, li.card")
     for card in cards:
-        title  = card.select_one(".program-card__title, .card__title")
-        degree = card.select_one(".program-card__degree, .card__degree")
-        link   = card.get("href") or card.select_one("a")["href"]
         yield {
-            "title":  title.get_text(strip=True) if title else "N/A",
-            "degree": degree.get_text(strip=True) if degree else "N/A",
-            "link":   link,
+            "title":  (card.select_one(".program-card__title, .card__title") or card).get_text(strip=True),
+            "degree": (card.select_one(".program-card__degree, .card__degree") or card).get_text(strip=True),
+            "link":   card.get("href") or card.select_one("a")["href"],
         }
 
 @app.get("/crawl")
 async def crawl():
-    return [c async for c in fetch_program_cards()]
+    data = [c async for c in fetch_program_cards()]
+    if not data:
+        log.warning("Crawler found 0 cards — selector may need update.")
+    return data
 
-# ---------- 3. /status (≥3 identifiers, program optional) ----------
+# ---------- 3. /status (≥3 IDs, follow redirects) ----------
 class StatusReq(BaseModel):
-    email:      Optional[str] = None
-    birthdate:  Optional[str] = None       # YYYY-MM-DD
-    panther_id: Optional[str] = None       # a.k.a. application_id
-    phone:      Optional[str] = None
-    last_name:  Optional[str] = None
-    program:    Optional[str] = None       # optional hint; doesn’t count toward 3
+    email:      Optional[str]=None
+    birthdate:  Optional[str]=None
+    panther_id: Optional[str]=None
+    phone:      Optional[str]=None
+    last_name:  Optional[str]=None
+    program:    Optional[str]=None  # optional hint
 
-def _enough_keys(d: dict, n: int = 3) -> bool:
-    keys = [k for k in ("email", "birthdate", "panther_id", "phone", "last_name") if d.get(k)]
-    return len(keys) >= n
+def _have_3(d: dict) -> bool:
+    return sum(bool(d.get(k)) for k in ("email","birthdate","panther_id","phone","last_name")) >= 3
 
 @app.get("/status")
 async def status(req: StatusReq = Depends()):
     params = req.dict(exclude_none=True)
-    if not _enough_keys(params):
-        raise HTTPException(
-            422,
-            "Please supply at least three of: email, birthdate, panther_id, phone, last_name"
-        )
+    if not _have_3(params):
+        raise HTTPException(422, "Need any three of: email, birthdate, panther_id, phone, last_name")
 
     headers = {"Authorization": f"Bearer {SLATE_TOKEN}"}
-    async with httpx.AsyncClient(timeout=10) as c:
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
         try:
             r = await c.get(SLATE_URL, params=params, headers=headers)
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text) from e
+            log.error("Slate replied %s → %s", e.response.status_code, e.response.text[:120])
+            raise HTTPException(e.response.status_code, "Slate error") from e
 
     rows = r.json().get("data", [])
     if not rows:
-        raise HTTPException(404, "No application matched those details")
+        raise HTTPException(404, "No application matched")
 
     row = rows[0]
     return {
@@ -157,11 +135,8 @@ async def status(req: StatusReq = Depends()):
     }
 
 # ---------- 4. /iframe ----------
-CHAT_IFRAME = """<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>GSU Chat-Botty</title>
+CHAT_IFRAME = """<!doctype html><html><head>
+<meta charset="utf-8"><title>GSU Chat</title>
 <style>
 body,html{margin:0;height:100%;font-family:system-ui}
 #log{height:calc(100% - 42px);overflow:auto;padding:8px}
@@ -170,39 +145,30 @@ body,html{margin:0;height:100%;font-family:system-ui}
 button{width:80px}
 .user{font-weight:bold;color:#0055CC}
 .bot{color:#333}
-</style>
-</head>
-<body>
+</style></head><body>
 <div id="log"></div>
 <form id="form">
-  <input id="msg" autocomplete="off" placeholder="Ask me anything…">
-  <button>Send</button>
+ <input id="msg" autocomplete="off" placeholder="Ask me anything…">
+ <button>Send</button>
 </form>
 <script>
-const logDiv = document.getElementById('log');
-const form   = document.getElementById('form');
-const msgBox = document.getElementById('msg');
-form.onsubmit = async (e) => {
-  e.preventDefault();
-  const text = msgBox.value.trim();
-  if (!text) return;
-  logDiv.innerHTML += `<div class='user'>🧑‍🎓 ${text}</div>`;
-  msgBox.value = '';
-  logDiv.scrollTop = logDiv.scrollHeight;
-  const r = await fetch('/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message: text })
-  });
-  const js   = await r.json();
-  const resp = js.choices?.[0]?.message?.content || '[error]';
-  logDiv.innerHTML += `<div class='bot'>🐾 ${resp}</div>`;
-  logDiv.scrollTop = logDiv.scrollHeight;
+const log=document.getElementById('log');
+const form=document.getElementById('form');
+const msg=document.getElementById('msg');
+form.onsubmit=async e=>{
+ e.preventDefault();
+ const t=msg.value.trim();
+ if(!t)return;
+ log.innerHTML+=`<div class='user'>🧑‍🎓 ${t}</div>`;
+ msg.value='';log.scrollTop=log.scrollHeight;
+ const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({message:t})});
+ const j=await r.json();
+ const a=j.choices?.[0]?.message?.content||'[error]';
+ log.innerHTML+=`<div class='bot'>🐾 ${a}</div>`;
+ log.scrollTop=log.scrollHeight;
 };
-</script>
-</body>
-</html>
-"""
+</script></body></html>"""
 
 @app.get("/iframe", response_class=HTMLResponse, include_in_schema=False)
 def iframe():
