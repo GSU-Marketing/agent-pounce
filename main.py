@@ -2,39 +2,40 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import openai, os
+from openai import OpenAI       # ← NEW library, replaces old “openai.ChatCompletion”
+import os
 
-# ---------- keys ----------
-openai.api_key = os.getenv("OPENAI_API_KEY")   # make sure this env var is set in Render
+# ---------- OpenAI client ----------
+client = OpenAI()               # uses OPENAI_API_KEY env var automatically
 
-# ---------- create ONE FastAPI app ----------
+# ---------- FastAPI app ----------
 app = FastAPI()
 
-# ---------- CORS (let browser JS talk to us) ----------
+# CORS: let browser JS call the API (tighten allow_origins in prod)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],         # later restrict to your domain
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- routes ----------
+# ---------- heartbeat ----------
 @app.get("/", include_in_schema=False)
 def health():
-    return {"status": "ok"}      # heartbeat page
+    return {"status": "ok"}
 
+# ---------- chat endpoint ----------
 class ChatQuery(BaseModel):
-    message: str
+    message: str                # JSON shape: {"message":"Hi"}
 
 @app.post("/chat")
 async def chat(query: ChatQuery):
-    """Simple echo to OpenAI"""
-    resp = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
+    completion = client.chat.completions.create(
+        model="gpt-3.5-turbo",  # or gpt-4o-mini if your key has access
         messages=[
-            {"role": "user", "content": query.message}
+            {"role": "system", "content": "You are a helpful bot."},
+            {"role": "user",   "content": query.message},
         ],
         temperature=0.7,
     )
-    # hand the whole response back to the browser
-    return resp.dict()
+    return completion.model_dump()   # full JSON back to caller
