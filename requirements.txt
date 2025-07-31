@@ -1,4 +1,5 @@
 fastapi
-uvicorn
-openai
-python-dotenv
+uvicorn[standard]
+openai>=1.1.0
+httpx
+beautifulsoup4
