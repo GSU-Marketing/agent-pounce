@@ -1,39 +1,40 @@
-from fastapi import FastAPI, Request
+# ---------- imports ----------
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import openai
-import os
+import openai, os
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# ---------- keys ----------
+openai.api_key = os.getenv("OPENAI_API_KEY")   # make sure this env var is set in Render
 
-@app.get("/", include_in_schema=False)
-def health():
-    return {"status": "ok"}      # <-- any JSON is fine
-
-
+# ---------- create ONE FastAPI app ----------
 app = FastAPI()
 
-# Allow frontend JS from any origin (in production, restrict to your domain)
+# ---------- CORS (let browser JS talk to us) ----------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],         # later restrict to your domain
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
+
+# ---------- routes ----------
+@app.get("/", include_in_schema=False)
+def health():
+    return {"status": "ok"}      # heartbeat page
 
 class ChatQuery(BaseModel):
     message: str
 
 @app.post("/chat")
 async def chat(query: ChatQuery):
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant for Georgia State University Graduate Programs."},
-                {"role": "user", "content": query.message}
-            ]
-        )
-        return {"response": response['choices'][0]['message']['content']}
-    except Exception as e:
-        return {"error": str(e)}
+    """Simple echo to OpenAI"""
+    resp = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "user", "content": query.message}
+        ],
+        temperature=0.7,
+    )
+    # hand the whole response back to the browser
+    return resp.dict()
