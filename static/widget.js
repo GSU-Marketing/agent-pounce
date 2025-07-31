@@ -1,66 +1,83 @@
-(function(){
-  /* ---------- inject CSS ---------- */
-  fetch("/static/widget.css").then(r => r.text()).then(css => {
-    const style=document.createElement("style");
-    style.innerHTML=css; document.head.appendChild(style);
-  });
+(async()=>{
+  /* 1. config, css */
+  const cfg = window.POUNCE_CONFIG || {};
+  const css = await fetch("/static/widget.css").then(r=>r.text());
+  const st  = document.createElement("style"); st.textContent = css; document.head.appendChild(st);
 
-  /* ---------- DOM skeleton ---------- */
-  const wrapper = document.createElement("div"); wrapper.className='ivy-main';
+  /* 2. expose color vars */
+  const root = document.documentElement;
+  root.style.setProperty("--pounce-header-bg", cfg.headerBg   || "#0039A6");
+  root.style.setProperty("--pounce-header-font", cfg.headerFont || "#FFFFFF");
+  root.style.setProperty("--pounce-bubble-bg", cfg.bgColor || "#0039A6");
+  root.style.setProperty("--pounce-focus", cfg.focusColor || "#FF0000");
+
+  /* 3. respect exclusion list */
+  if ((cfg.excludePaths||[]).some(p=>location.pathname.includes(p))) return;
+
+  /* 4. build DOM */
+  const wrap   = document.createElement("div"); wrap.className="pounce-wrap";
+  wrap.style[cfg.position?.startsWith("bottom")?"bottom":"top"] = "24px";
+  wrap.style[cfg.position?.endsWith("left")?"left":"right"]    = "24px";
 
   const bubble = document.createElement("div");
-  bubble.className='ivy-circle'; bubble.innerHTML='💬';
-  wrapper.appendChild(bubble);
+  bubble.className = `pounce-bubble ${cfg.shape==="tab"?"tab":"circle"}`;
+  bubble.innerHTML = cfg.iconImage
+      ? `<img src="${cfg.iconImage}" alt="icon">`
+      : `<span style="font-size:28px;color:#fff">${cfg.icon||"💬"}</span>`;
+  wrap.appendChild(bubble);
 
-  const popup = document.createElement("div"); popup.className='ivy-popup';
-  popup.innerHTML=`
-    <div class="ivy-chat-header">
-      <span>Hi I’m Pathfinder!</span>
-      <button class="ivy-chat-close" aria-label="Close">&times;</button>
+  const pop = document.createElement("div"); pop.className="pounce-popup";
+  pop.style.animation = cfg.animation==="slide"
+      ? `pounce-slide ${cfg.animationDuration||0.35}s ease ${cfg.animationCount||1}`
+      : cfg.animation==="none"
+        ? "none"
+        : `pounce-bounce ${cfg.animationDuration||0.35}s ease ${cfg.animationCount||1}`;
+  pop.innerHTML = `
+    <div class="pounce-header">
+      <span>${cfg.headerText||"Agent Pounce"}</span>
+      <button class="pounce-close" aria-label="Close">&times;</button>
     </div>
-    <div class="ivy-content">
-      <div id="log"></div>
-      <form id="form">
-        <input id="msg" autocomplete="off" placeholder="How can I help you?">
-        <button id="send">Send</button>
+    <div style="flex:1;display:flex;flex-direction:column">
+      <div id="pounce-log"></div>
+      <form id="pounce-form">
+        <input id="pounce-msg" placeholder="${cfg.placeholder||"How can I help you?"}">
+        <button id="pounce-send">Send</button>
       </form>
     </div>`;
-  wrapper.appendChild(popup); document.body.appendChild(wrapper);
+  wrap.appendChild(pop); document.body.appendChild(wrap);
 
-  /* ---------- elements ---------- */
-  const logDiv = popup.querySelector('#log');
-  const form   = popup.querySelector('#form');
-  const msgBox = popup.querySelector('#msg');
+  /* avatar in header */
+  if (cfg.avatar){
+    const img=document.createElement("img");
+    img.src=cfg.avatar; img.alt="avatar";
+    img.style="width:28px;height:28px;margin-right:6px;border-radius:50%";
+    pop.querySelector(".pounce-header").prepend(img);
+  }
 
-  /* ---------- intro message ---------- */
-  const intro = "👋 Hi! I’m Agent Pounce, your grad-admissions guru. Ask me anything…";
-  logDiv.innerHTML = `<div class='bot'>🐾 ${intro}</div>`;
+  /* intro */
+  const log = pop.querySelector("#pounce-log");
+  log.innerHTML = `<div class='pounce-bot'>🐾 ${cfg.bodyText||
+     "👋 Hi! I’m Agent Pounce, your grad-admissions guru. Ask me anything…"}</div>`;
 
-  
-
-
-  /* ---------- open / close ---------- */
-  bubble.onclick = () => { popup.style.display='flex'; bubble.style.display='none'; };
-  popup.querySelector('.ivy-chat-close').onclick = () => {
-      popup.style.display='none'; bubble.style.display='flex';
+  /* open/close */
+  bubble.onclick = ()=>{pop.style.display="flex";bubble.style.display="none";};
+  pop.querySelector(".pounce-close").onclick = ()=>{
+    pop.style.display="none"; bubble.style.display="flex";
   };
 
-  /* ---------- chat plumbing ---------- */
-  form.onsubmit = async e => {
+  /* chat plumbing */
+  const form = pop.querySelector("#pounce-form"),
+        msg  = pop.querySelector("#pounce-msg");
+  form.onsubmit = async e=>{
     e.preventDefault();
-    const text = msgBox.value.trim();
-    if (!text) return;
-    logDiv.innerHTML += `<div class='user'>🧑‍🎓 ${text}</div>`;
-    msgBox.value=''; logDiv.scrollTop = logDiv.scrollHeight;
-
-    const r  = await fetch('/chat',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message:text})
-    });
+    const t = msg.value.trim(); if(!t) return;
+    log.innerHTML += `<div class='pounce-user'>🧑‍🎓 ${t}</div>`; msg.value="";
+    log.scrollTop = log.scrollHeight;
+    const r  = await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+                                   body:JSON.stringify({message:t})});
     const js = await r.json();
-    const ai = js.choices?.[0]?.message?.content || '[error]';
-    logDiv.innerHTML += `<div class='bot'>🐾 ${ai}</div>`;
-    logDiv.scrollTop = logDiv.scrollHeight;
+    const a  = js.choices?.[0]?.message?.content || '[error]';
+    log.innerHTML += `<div class='pounce-bot'>🐾 ${a}</div>`;
+    log.scrollTop  = log.scrollHeight;
   };
 })();
