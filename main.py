@@ -1,10 +1,10 @@
 """
 GSU Chat-Botty backend  v1.2-debug
-• GET  /              → health-check (GET & HEAD)
+• GET  /              → health-check
 • POST /chat          → OpenAI chat completion
-• GET  /crawl         → live program cards (follows Cloudflare redirect)
-• GET  /status        → flexible 3-ID Slate lookup (follows redirect)
-• GET  /iframe        → mini HTML chat widget
+• GET  /crawl         → program cards
+• GET  /status        → flexible 3-ID Slate lookup
+• GET  /iframe        → mini chat widget
 """
 
 # ---------- stdlib ----------
@@ -22,21 +22,26 @@ import httpx
 from bs4 import BeautifulSoup
 
 # ---------- logging ----------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("gsu-chat-botty")
 
 # ---------- env ----------
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI()                        # auto-reads env
-SLATE_URL   = os.getenv("SLATE_URL",   "https://gradapply.gsu.edu/manage/service/api/gradtestbot")
-SLATE_TOKEN = os.getenv("SLATE_TOKEN", "1e5b8e64-548b-4341-843a-9a9bbbef92da")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")           # must be set in Render
+client = OpenAI()                                     # ← missing in your paste
+
+SLATE_URL   = (
+    "https://gradapply.gsu.edu/manage/query/run"
+    "?id=0b17bc0d-6d90-444b-b581-206c7176df0e"
+    "&cmd=service&output=json"
+)
+SLATE_USER  = "chatbot"                               # Name you typed in “User Token”
+SLATE_TOKEN = "49704e7d-0520-4036-a611-a631bc6c750c"  # token value
 
 # ---------- FastAPI ----------
 app = FastAPI(title="GSU Chat-Botty", version="1.2-debug")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware,
+                   allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ---------- 0. health ----------
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
@@ -50,12 +55,12 @@ class ChatQuery(BaseModel):
 @app.post("/chat")
 async def chat(q: ChatQuery):
     try:
-        c = client.chat.completions.create(
+        comp = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[{"role":"system","content":"You are a helpful bot."},
-                      {"role":"user","content":q.message}],
+            messages=[{"role": "system", "content": "You are a helpful bot."},
+                      {"role": "user",   "content": q.message}],
         )
-        return c.model_dump()
+        return comp.model_dump()
     except Exception as e:
         log.exception("OpenAI error")
         raise HTTPException(500, str(e))
@@ -67,18 +72,15 @@ async def fetch_program_cards(url="https://graduate.gsu.edu/program-cards/"):
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
                        "Chrome/126 Safari/537.36")
     }
-    async with httpx.AsyncClient(
-        timeout=15, headers=headers, follow_redirects=True
-    ) as c:
-        r = await c.get(url)
-        r.raise_for_status()
+    async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as c:
+        r = await c.get(url); r.raise_for_status()
 
     soup  = BeautifulSoup(r.text, "html.parser")
     cards = soup.select("a.program-card, li.card")
     for card in cards:
         yield {
-            "title":  (card.select_one(".program-card__title, .card__title") or card).get_text(strip=True),
-            "degree": (card.select_one(".program-card__degree, .card__degree") or card).get_text(strip=True),
+            "title":  card.select_one(".program-card__title, .card__title").get_text(strip=True),
+            "degree": card.select_one(".program-card__degree, .card__degree").get_text(strip=True),
             "link":   card.get("href") or card.select_one("a")["href"],
         }
 
@@ -89,34 +91,47 @@ async def crawl():
         log.warning("Crawler found 0 cards — selector may need update.")
     return data
 
-# ---------- 3. /status (≥3 IDs, follow redirects) ----------
+# ---------- helper ----------
+def _safe_json(resp: httpx.Response) -> dict:
+    ctype = resp.headers.get("content-type", "")
+    if "application/json" not in ctype.lower():
+        raise HTTPException(
+            502,
+            f"Slate returned non-JSON ({resp.status_code}) – "
+            "check Web-Service auth settings."
+        )
+    return resp.json()
+
+# ---------- 3. /status ----------
 class StatusReq(BaseModel):
-    email:      Optional[str]=None
-    birthdate:  Optional[str]=None
-    panther_id: Optional[str]=None
-    phone:      Optional[str]=None
-    last_name:  Optional[str]=None
-    program:    Optional[str]=None  # optional hint
+    email:      Optional[str] = None
+    birthdate:  Optional[str] = None  # YYYY-MM-DD
+    panther_id: Optional[str] = None
+    phone:      Optional[str] = None
+    last_name:  Optional[str] = None
+    program:    Optional[str] = None  # optional hint
 
 def _have_3(d: dict) -> bool:
-    return sum(bool(d.get(k)) for k in ("email","birthdate","panther_id","phone","last_name")) >= 3
+    return sum(bool(d.get(k)) for k in
+               ("email", "birthdate", "panther_id", "phone", "last_name")) >= 3
 
 @app.get("/status")
 async def status(req: StatusReq = Depends()):
     params = req.dict(exclude_none=True)
+    params.update({"user": SLATE_USER, "token": SLATE_TOKEN})   # 👈 query-string creds
+
     if not _have_3(params):
         raise HTTPException(422, "Need any three of: email, birthdate, panther_id, phone, last_name")
 
-    headers = {"Authorization": f"Bearer {SLATE_TOKEN}"}
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
         try:
-            r = await c.get(SLATE_URL, params=params, headers=headers)
-            r.raise_for_status()
+            r = await c.get(SLATE_URL, params=params); r.raise_for_status()
         except httpx.HTTPStatusError as e:
-            log.error("Slate replied %s → %s", e.response.status_code, e.response.text[:120])
+            log.error("Slate replied %s → %s", e.response.status_code,
+                      e.response.text[:120])
             raise HTTPException(e.response.status_code, "Slate error") from e
 
-    rows = r.json().get("data", [])
+    rows = _safe_json(r).get("data", [])
     if not rows:
         raise HTTPException(404, "No application matched")
 
@@ -147,26 +162,18 @@ button{width:80px}
 .bot{color:#333}
 </style></head><body>
 <div id="log"></div>
-<form id="form">
- <input id="msg" autocomplete="off" placeholder="Ask me anything…">
- <button>Send</button>
-</form>
+<form id="form"><input id="msg" autocomplete="off" placeholder="Ask me anything…">
+<button>Send</button></form>
 <script>
-const log=document.getElementById('log');
-const form=document.getElementById('form');
-const msg=document.getElementById('msg');
+const log=document.getElementById('log'),form=document.getElementById('form'),msg=document.getElementById('msg');
 form.onsubmit=async e=>{
- e.preventDefault();
- const t=msg.value.trim();
- if(!t)return;
- log.innerHTML+=`<div class='user'>🧑‍🎓 ${t}</div>`;
- msg.value='';log.scrollTop=log.scrollHeight;
- const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({message:t})});
- const j=await r.json();
- const a=j.choices?.[0]?.message?.content||'[error]';
- log.innerHTML+=`<div class='bot'>🐾 ${a}</div>`;
- log.scrollTop=log.scrollHeight;
+  e.preventDefault();
+  const t=msg.value.trim(); if(!t)return;
+  log.innerHTML+=`<div class='user'>🧑‍🎓 ${t}</div>`; msg.value=''; log.scrollTop=log.scrollHeight;
+  const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({message:t})});
+  const j=await r.json(), a=j.choices?.[0]?.message?.content||'[error]';
+  log.innerHTML+=`<div class='bot'>🐾 ${a}</div>`; log.scrollTop=log.scrollHeight;
 };
 </script></body></html>"""
 
