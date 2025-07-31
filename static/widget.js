@@ -33,9 +33,11 @@
   const msgBox = popup.querySelector('#msg');
 
   /* ---------- intro message ---------- */
-  const intro = "👋 Welcome to Georgia State’s Graduate Admissions chat! "
-              + "Ask me anything — or type *status* to check your application.";
+  const intro = "👋 Hi! I’m Agent Pounce, your grad-admissions guru. Ask me anything…";
   logDiv.innerHTML = `<div class='bot'>🐾 ${intro}</div>`;
+
+  
+
 
   /* ---------- open / close ---------- */
   bubble.onclick = () => { popup.style.display='flex'; bubble.style.display='none'; };
