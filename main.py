@@ -53,19 +53,20 @@ class ChatQuery(BaseModel):
 
 @app.post("/chat")
 async def chat(q: ChatQuery):
-    try:
-        comp = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content":
-                 "You are Agent Pounce, Georgia State’s graduate admissions assistant. "
-                 "Always greet new users with: 👋 Hi! I’m Agent Pounce, your grad-admissions guru. "
-                 "Ask me anything…"},
-                {"role": "user", "content": q.message}          # ← user question added
-            ],
-            temperature=0.7,
-        )
-        return comp.model_dump()
+    comp = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role":"system","content":
+             "You are Agent Pounce, Georgia State’s graduate admissions assistant. "
+             "Always greet new users with: 👋 Hi! I’m Agent Pounce, your grad-admissions guru. "
+             "Ask me anything…"},
+            {"role":"user","content":q.message}   # ← keep user line
+        ],
+        temperature=0.7,
+    )
+    return comp.model_dump()
+
+
     except Exception as e:
         log.exception("OpenAI error")
         raise HTTPException(500, str(e))
