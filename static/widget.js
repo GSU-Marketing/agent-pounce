@@ -1,7 +1,7 @@
 (async()=>{
   /* 1. config, css */
   const cfg = window.POUNCE_CONFIG || {};
-  const css = await fetch("/static/widget.css").then(r=>r.text());
+  const css = await fetch("https://gsu-chat-botty.onrender.com/static/widget.css").then(r=>r.text());
   const st  = document.createElement("style"); st.textContent = css; document.head.appendChild(st);
 
   /* 2. expose color vars */
